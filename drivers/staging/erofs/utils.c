@@ -14,6 +14,8 @@
 #include "internal.h"
 #include <linux/module.h>
 #include <linux/mempool.h>
+#include <linux/cpu.h>
+#include <linux/cpuhotplug.h>
 #include <linux/pagevec.h>
 
 static mempool_t *erofs_bounce_page_pool;
@@ -108,6 +110,165 @@ void erofs_put_pages_list(struct list_head *pool)
 		page->mapping = NULL;
 		mempool_free(page, erofs_bounce_page_pool);
 	}
+}
+
+struct erofs_pcpu_vma {
+	/* vm area for mapping object that span pages */
+	struct vm_struct *vm;
+
+	unsigned int nr_pages;
+};
+
+static const unsigned int percpu_vma_maxpages[EROFS_NR_PERCPU_VMA] = { 32 };
+
+/* mainly used to protect vma_maxpages consistent with vm */
+static rwlock_t percpu_vmalock[EROFS_NR_PERCPU_VMA] = {__RW_LOCK_UNLOCKED(0)};
+
+static DEFINE_PER_CPU(struct erofs_pcpu_vma, percpu_vma[EROFS_NR_PERCPU_VMA]);
+
+unsigned int erofs_lock_pcpu_vm_area(unsigned int nr)
+{
+	read_lock(&percpu_vmalock[nr]);
+	preempt_disable();
+	pagefault_disable();
+	return percpu_vma_maxpages[nr];
+}
+
+void erofs_unlock_pcpu_vm_area(unsigned int nr)
+{
+	pagefault_enable();
+	preempt_enable();
+	read_unlock(&percpu_vmalock[nr]);
+}
+
+void *erofs_map_pcpu_vm_area(unsigned int nr, struct page **pages,
+			     unsigned int nrpages)
+{
+	struct erofs_pcpu_vma *area;
+	unsigned long addr;
+
+	/* callers should not pass invalid values in */
+	DBG_BUGON(nrpages > percpu_vma_maxpages[nr]);
+	area = &get_cpu_var(percpu_vma[nr]);
+
+	addr = (unsigned long)area->vm->addr;
+
+	if (area->nr_pages)
+		unmap_kernel_range_local(addr, area->nr_pages * PAGE_SIZE);
+
+	/* map_vm_area cannot be used to map part of the vm area */
+	map_kernel_range_noflush(addr, nrpages * PAGE_SIZE,
+				 PAGE_KERNEL, pages);
+	flush_cache_vmap(addr, addr + nrpages * PAGE_SIZE);
+	area->nr_pages = nrpages;
+
+	put_cpu_var(percpu_vma[nr]);
+	return (void *)addr;
+}
+
+static int erofs_cpu_prepare(unsigned int cpu)
+{
+	unsigned int i;
+
+	for (i = 0; i < EROFS_NR_PERCPU_VMA; ++i) {
+		struct erofs_pcpu_vma *area = &per_cpu(percpu_vma[i], cpu);
+		struct vm_struct *vm;
+		unsigned size;
+
+repeat:
+		/*
+		 * Make sure we don't leak memory if a cpu UP notification
+		 * and erofs_register_cpu_notifier() race and both call
+		 * cpu_up() on the same cpu
+		 */
+		vm = READ_ONCE(area->vm);
+		size = percpu_vma_maxpages[i] * PAGE_SIZE;
+		if (vm && get_vm_area_size(vm) == size)
+			return 0;
+
+		if (!size) {
+			if (!vm)
+				continue;
+
+			write_lock(&percpu_vmalock[i]);
+			if (get_vm_area_size(vm)) {
+				write_unlock(&percpu_vmalock[i]);
+				goto repeat;
+			}
+			vm = area->vm;
+			area->vm = NULL;
+			write_unlock(&percpu_vmalock[i]);
+			free_vm_area(area->vm);
+			continue;
+		}
+
+		vm = alloc_vm_area(size, NULL);
+		if (!vm)
+			return -ENOMEM;
+
+		write_lock(&percpu_vmalock[i]);
+		if (percpu_vma_maxpages[i] * PAGE_SIZE != size) {
+			write_unlock(&percpu_vmalock[i]);
+			free_vm_area(vm);
+			goto repeat;
+		}
+
+		if (vm || get_vm_area_size(vm) == size) {
+			area->vm = vm;
+			area->nr_pages = 0;
+			vm = NULL;
+		}
+		write_unlock(&percpu_vmalock[i]);
+
+		if (vm)
+			free_vm_area(vm);
+	}
+	return 0;
+}
+
+static int erofs_cpu_dead(unsigned int cpu)
+{
+	unsigned int i;
+
+	for (i = 0; i < EROFS_NR_PERCPU_VMA; ++i) {
+		struct erofs_pcpu_vma *area = &per_cpu(percpu_vma[i], cpu);
+		struct vm_struct *vm;
+
+		write_lock(&percpu_vmalock[i]);
+		if (!area->vm) {
+			write_unlock(&percpu_vmalock[i]);
+			continue;
+		}
+
+		vm = area->vm;
+		area->vm = NULL;
+		write_unlock(&percpu_vmalock[i]);
+		free_vm_area(vm);
+	}
+	return 0;
+}
+
+static enum cpuhp_state hp_online;
+
+int __init erofs_register_cpu_notifier(void)
+{
+	int err, i;
+
+	for (i = 0; i < EROFS_NR_PERCPU_VMA; ++i)
+		rwlock_init(&percpu_vmalock[i]);
+
+	err = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "fs/erofs:online",
+				erofs_cpu_prepare, erofs_cpu_dead);
+	if (err < 0)
+		return err;
+
+	hp_online = err;
+	return 0;
+}
+
+void erofs_unregister_cpu_notifier(void)
+{
+	cpuhp_remove_state(hp_online);
 }
 
 /* global shrink count (for all mounted EROFS instances) */
