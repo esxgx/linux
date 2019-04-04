@@ -322,6 +322,10 @@ static inline void z_erofs_exit_zip_subsystem(void) {}
 
 /* page count of a compressed cluster */
 #define erofs_clusterpages(sbi)         ((1 << (sbi)->clusterbits) / PAGE_SIZE)
+
+#define EROFS_PCPUBUF_NR_PAGES		Z_EROFS_CLUSTER_MAX_PAGES
+#else
+#define EROFS_PCPUBUF_NR_PAGES		0
 #endif
 
 typedef u64 erofs_off_t;
@@ -612,6 +616,9 @@ unsigned int erofs_lock_pcpu_vm_area(unsigned int nr);
 void erofs_unlock_pcpu_vm_area(unsigned int nr);
 void *erofs_map_pcpu_vm_area(unsigned int nr, struct page **pages,
 			     unsigned int nrpages);
+
+void *erofs_get_pcpubuf(unsigned int pagenr);
+int erofs_put_pcpubuf(void *buf, unsigned int pagenr);
 
 int __init erofs_register_cpu_notifier(void);
 void erofs_unregister_cpu_notifier(void);

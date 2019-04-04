@@ -166,6 +166,74 @@ void *erofs_map_pcpu_vm_area(unsigned int nr, struct page **pages,
 	return (void *)addr;
 }
 
+#if (EROFS_PCPUBUF_NR_PAGES > 0)
+static DEFINE_PER_CPU(void *, percpu_pagebuf);
+static DEFINE_PER_CPU(struct list_head, percpu_pagehead);
+
+void *erofs_get_pcpubuf(unsigned int pagenr)
+{
+	if (pagenr >= EROFS_PCPUBUF_NR_PAGES)
+		return ERR_PTR(-ERANGE);
+
+	return (char *)get_cpu_var(percpu_pagebuf) + pagenr * PAGE_SIZE;
+}
+
+int erofs_put_pcpubuf(void *buf, unsigned int pagenr)
+{
+	if (buf && *this_cpu_ptr(&percpu_pagebuf) + pagenr * PAGE_SIZE != buf)
+		return -EINVAL;
+
+	put_cpu_var(percpu_pagebuf);
+	return 0;
+}
+
+static int erofs_pcpubuf_cpu_prepare(unsigned int cpu)
+{
+	struct list_head *const list = &per_cpu(percpu_pagehead, cpu);
+	struct page *pages[EROFS_PCPUBUF_NR_PAGES];
+	void *ptr;
+	unsigned int i;
+
+	INIT_LIST_HEAD(list);
+	for (i = 0; i < EROFS_PCPUBUF_NR_PAGES; ++i) {
+		pages[i] = alloc_pages(GFP_KERNEL, 0);
+		if (!pages[i])
+			goto fail_nomem;
+		list_add_tail(&pages[i]->lru, list);
+	}
+
+	ptr = erofs_vmap(pages, EROFS_PCPUBUF_NR_PAGES);
+	if (!ptr)
+		goto fail_nomem;
+
+	per_cpu(percpu_pagebuf, cpu) = ptr;
+	return 0;
+fail_nomem:
+	while (i)
+		erofs_putpage(pages[--i]);
+	INIT_LIST_HEAD(list);
+	per_cpu(percpu_pagebuf, cpu) = NULL;
+	errln("failed to allocate pcpubuf for cpu %u", cpu);
+	return -ENOMEM;
+}
+
+static void erofs_pcpubuf_cpu_dead(unsigned int cpu)
+{
+	struct list_head *const list = &per_cpu(percpu_pagehead, cpu);
+	void **const pptr = &per_cpu(percpu_pagebuf, cpu);
+
+	erofs_vunmap(*pptr, EROFS_PCPUBUF_NR_PAGES);
+	if (list->next != list->prev)
+		erofs_put_pages_list(list);
+	*pptr = NULL;
+}
+#else
+void *erofs_get_pcpubuf(unsigned int pagenr) { return ERR_PTR(-ENOTSUPP); }
+int erofs_put_pcpubuf(void *buf, unsigned int pagenr) { return -ENOTSUPP; }
+static int erofs_pcpubuf_cpu_prepare(unsigned int cpu) { return 0; }
+static void erofs_pcpubuf_cpu_dead(unsigned int cpu) {}
+#endif
+
 static int erofs_cpu_prepare(unsigned int cpu)
 {
 	unsigned int i;
@@ -223,6 +291,7 @@ repeat:
 		if (vm)
 			free_vm_area(vm);
 	}
+	erofs_pcpubuf_cpu_prepare(cpu);
 	return 0;
 }
 
@@ -245,6 +314,7 @@ static int erofs_cpu_dead(unsigned int cpu)
 		write_unlock(&percpu_vmalock[i]);
 		free_vm_area(vm);
 	}
+	erofs_pcpubuf_cpu_dead(cpu);
 	return 0;
 }
 
