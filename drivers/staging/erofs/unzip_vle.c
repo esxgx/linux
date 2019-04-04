@@ -1150,7 +1150,7 @@ static void z_erofs_vle_unzip_wq(struct work_struct *work)
 	DBG_BUGON(iosb->io.head == Z_EROFS_VLE_WORKGRP_TAIL_CLOSED);
 	z_erofs_vle_unzip_all(iosb->sb, &iosb->io, &page_pool);
 
-	put_pages_list(&page_pool);
+	erofs_put_pages_list(&page_pool);
 	kvfree(iosb);
 }
 
@@ -1548,7 +1548,7 @@ out:
 		put_page(f.map.mpage);
 
 	/* clean up the remaining free pages */
-	put_pages_list(&pagepool);
+	erofs_put_pages_list(&pagepool);
 	return 0;
 }
 
@@ -1619,7 +1619,7 @@ static int z_erofs_vle_normalaccess_readpages(struct file *filp,
 		put_page(f.map.mpage);
 
 	/* clean up the remaining free pages */
-	put_pages_list(&pagepool);
+	erofs_put_pages_list(&pagepool);
 	return 0;
 }
 
