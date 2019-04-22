@@ -934,6 +934,9 @@ static int z_erofs_vle_unzip(struct super_block *sb,
 	struct z_erofs_vle_work *work;
 	int err;
 
+	struct address_space *fmapping;
+	unsigned int fbase;
+
 	might_sleep();
 	work = z_erofs_vle_grab_primary_work(grp);
 	DBG_BUGON(!READ_ONCE(work->nr_pages));
@@ -989,6 +992,8 @@ repeat:
 		DBG_BUGON(pages[pagenr]);
 
 		pages[pagenr] = page;
+		fmapping = page->mapping;
+		fbase = page->index - pagenr;
 	}
 	sparsemem_pages = i;
 
@@ -1025,6 +1030,9 @@ repeat:
 			++sparsemem_pages;
 			pages[pagenr] = page;
 
+			fmapping = page->mapping;
+			fbase = page->index - pagenr;
+
 			overlapped = true;
 		}
 
@@ -1044,6 +1052,25 @@ repeat:
 		outputsize = grp->llen;
 	} else {
 		outputsize = (nr_pages << PAGE_SHIFT) - work->pageofs;
+	}
+
+	for (i = (work->pageofs ? 1 : 0); i < nr_pages; ++i) {
+		page = pages[i];
+		if (page)
+			continue;
+
+		page = grab_cache_page_nowait(fmapping, fbase + i);
+		if (!page)
+			continue;
+
+		put_page(page);
+		if (PageUptodate(page)) {
+			unlock_page(page);
+			continue;
+		}
+
+		z_erofs_onlinepage_init(page);
+		pages[i] = page;
 	}
 
 	if (z_erofs_vle_workgrp_fmt(grp) == Z_EROFS_VLE_WORKGRP_FMT_PLAIN)
