@@ -248,6 +248,8 @@ enum {
 	Opt_decompcache,
 	Opt_udef,
 	Opt_udef2,
+	Opt_udef3,
+	Opt_nudef,
 	Opt_err
 };
 
@@ -260,6 +262,8 @@ static match_table_t erofs_tokens = {
 	{Opt_decompcache, "decompcache=%s"},
 	{Opt_udef, "udef"},
 	{Opt_udef2, "udef2"},
+	{Opt_udef3, "udef3"},
+	{Opt_nudef, "nudef"},
 	{Opt_err, NULL}
 };
 
@@ -329,6 +333,15 @@ static int parse_options(struct super_block *sb, char *options)
 		case Opt_udef2:
 			set_opt(EROFS_SB(sb), UDEF2);
 			break;
+		case Opt_udef3:
+			set_opt(EROFS_SB(sb), UDEF3);
+			break;
+		case Opt_nudef:
+			clear_opt(EROFS_SB(sb), UDEF);
+			clear_opt(EROFS_SB(sb), UDEF2);
+			clear_opt(EROFS_SB(sb), UDEF3);
+			break;
+
 		default:
 			errln("Unrecognized mount option \"%s\" "
 					"or missing value", p);
@@ -696,6 +709,13 @@ static int erofs_show_options(struct seq_file *seq, struct dentry *root)
 	if (test_opt(sbi, FAULT_INJECTION))
 		seq_printf(seq, ",fault_injection=%u",
 			   erofs_get_fault_rate(sbi));
+
+	if (test_opt(sbi, UDEF))
+		seq_puts(seq, ",udef");
+	if (test_opt(sbi, UDEF2))
+		seq_puts(seq, ",udef2");
+	if (test_opt(sbi, UDEF3))
+		seq_puts(seq, ",udef3");
 	return 0;
 }
 

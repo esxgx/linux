@@ -1178,13 +1178,16 @@ repeat:
 		pages[i] = page;
 	}
 
-
+	dip = false;
 	if (nr_pages << PAGE_SHIFT >= work->pageofs + grp->llen) {
 		dip = (grp->flags & Z_EROFS_VLE_WORKGRP_ZIPPED_DIP);
 		outputsize = grp->llen;
 	} else {
 		outputsize = (nr_pages << PAGE_SHIFT) - work->pageofs;
 	}
+
+	if (test_opt(sbi, UDEF3))
+		dip = false;
 
 	if (z_erofs_vle_workgrp_fmt(grp) == Z_EROFS_VLE_WORKGRP_FMT_PLAIN)
 		algorithm = Z_EROFS_COMPRESSION_SHIFTED;
@@ -1859,8 +1862,9 @@ vle_get_logical_extent_head(const struct vle_map_blocks_iter_ctx *ctx,
 
 	if ((*flags & Z_EROFS_MAP_FULL_MAPPED) &&
 	    cluster_type != Z_EROFS_VLE_CLUSTER_TYPE_PLAIN &&
-	    __vle_cluster_advise(di->di_advise, Z_EROFS_VLE_DI_ZIPPED_DIP, 1))
+	    __vle_cluster_advise(di->di_advise, Z_EROFS_VLE_DI_ZIPPED_DIP, 1)) {
 		*flags |= Z_EROFS_MAP_ZIPPED_DIP;
+	}
 
 	switch (cluster_type) {
 	case Z_EROFS_VLE_CLUSTER_TYPE_NONHEAD:
