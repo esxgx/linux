@@ -758,4 +758,11 @@ config GUP_BENCHMARK
 config ARCH_HAS_PTE_SPECIAL
 	bool
 
+config PCPU_VM
+	bool "percpu vm allocator"
+	default n
+	help
+	  This feature allow to reserve continious virtual memory for each
+	  cpu and map physical pages to given percpu vm area.
+
 endmenu
