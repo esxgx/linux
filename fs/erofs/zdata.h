@@ -88,6 +88,9 @@ struct z_erofs_unzip_io {
 	atomic_t pending_bios;
 	z_erofs_next_pcluster_t head;
 
+	struct page **rpages;
+	unsigned int nr_pages;
+
 	union {
 		wait_queue_head_t wait;
 		struct work_struct work;
